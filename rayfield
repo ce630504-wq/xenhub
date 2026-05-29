@@ -1,6 +1,9 @@
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+getgenv().RAYFIELD_SECURE = true
+getgenv().RAYFIELD_ASSET_ID = 123456789 -- your re-uploaded model
+
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 local Window = Rayfield:CreateWindow({
-   Name = "Rayfield Example Window",
+   Name = "XenHub",
    Icon = 86886403233979, -- Icon in Topbar. Can use Lucide Icons (string) or Roblox Image (number). 0 to use no icon (default).
    LoadingTitle = "Rayfield Interface Suite",
    LoadingSubtitle = "by Sirius",
@@ -38,11 +41,11 @@ local Window = Rayfield:CreateWindow({
    }
 })
 
-local Tab = Window:CreateTab("Tab Example", "rewind")
+local Tab = Window:CreateTab("Tab Example", "astroid")
 
 local Section = Tab:CreateSection("Section Example")
 
-local Tab = Window:CreateTab("Setting's", "rewind")
+local Tab = Window:CreateTab("Setting's", "settings")
 
 {
 	TextColor = Color3.fromRGB(240, 240, 240),
