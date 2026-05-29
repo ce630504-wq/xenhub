@@ -43,7 +43,8 @@ local Window = Rayfield:CreateWindow({
 
 local Tab = Window:CreateTab("DEMONOLOGY", "activity")
 
-local Section = Tab:CreateSection("Section Example")
+local Section = Tab:CreateSection("Demonology Script")
+local Divider = Tab:CreateDivider()
 
 local Tab = Window:CreateTab("Setting's", "settings")
 
