@@ -1,0 +1,359 @@
+--[[
+    ═══════════════════════════════════════════════════════════════
+    SHERIFF + HITBOX SYSTEM  —  LocalScript
+    Place inside: StarterGui  (as a LocalScript)
+    ═══════════════════════════════════════════════════════════════
+
+    HIGHLIGHT RULES (other players only):
+      🔵 Blue   → has a Gun
+      🔴 Red    → has a Knife
+      🟡 Gold   → was unarmed, then picked up a Gun (Sheriff)
+      ⬛ None   → unarmed  |  everyone unarmed → all clear
+
+    HITBOX RULES (transparent expanded Part on HumanoidRootPart):
+      Murderer role  → ALL other players get big hitbox
+      Sheriff role   → only the Murderer gets big hitbox
+      Match ends     → all hitboxes restored to normal
+
+    ROLE DETECTION:
+      Reads a StringValue named "Role" inside each Player.
+      Values expected: "Murderer" | "Sheriff" | "Innocent" | ""
+      → Ask your server script to set player.Role.Value each round.
+    ═══════════════════════════════════════════════════════════════
+--]]
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ── CONFIG ───────────────────────────────────────────────────────────────────
+
+local KNIFE_KEYWORDS = { "knife", "blade", "dagger", "shiv", "machete" }
+local GUN_KEYWORDS   = { "gun", "pistol", "rifle", "shotgun", "smg",
+                          "ak", "m4", "uzi", "sniper", "revolver", "glock" }
+
+-- Highlight colors
+local COLOR_GUN     = Color3.fromRGB(40,  120, 220)   -- Blue
+local COLOR_KNIFE   = Color3.fromRGB(220, 40,  40)    -- Red
+local COLOR_SHERIFF = Color3.fromRGB(255, 200, 30)    -- Gold
+
+local FILL_TRANS    = 0.75
+local OUTLINE_TRANS = 0.2
+
+-- Hitbox settings
+local HITBOX_SIZE        = Vector3.new(8, 8, 8)   -- expanded hitbox size
+local HITBOX_NORMAL_SIZE = Vector3.new(2, 2, 1)   -- default HRP size
+local HITBOX_TRANSPARENCY = 0.4                   -- 40% transparent (visible tint)
+local HITBOX_COLOR        = Color3.fromRGB(255, 80, 80) -- reddish tint
+
+local UPDATE_RATE = 0.2   -- seconds between scans
+
+-- ── STATE ────────────────────────────────────────────────────────────────────
+
+local wasUnarmed = {}   -- [userId] = true if player was ever unarmed this life
+
+-- ── ROLE HELPERS ─────────────────────────────────────────────────────────────
+
+-- Returns "Murderer", "Sheriff", "Innocent", or ""
+local function getRole(player)
+    local rv = player:FindFirstChild("Role")
+    if rv and rv:IsA("StringValue") then
+        return rv.Value
+    end
+    -- Fallback: check team name
+    if player.Team then
+        return player.Team.Name
+    end
+    return ""
+end
+
+local function getMyRole()
+    return getRole(LocalPlayer)
+end
+
+-- Find which player has the Murderer role
+local function getMurdererPlayer()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and getRole(p) == "Murderer" then
+            return p
+        end
+    end
+    return nil
+end
+
+-- ── WEAPON HELPERS ───────────────────────────────────────────────────────────
+
+local function matchesAny(name, keywords)
+    local lower = name:lower()
+    for _, kw in ipairs(keywords) do
+        if lower:find(kw, 1, true) then return true end
+    end
+    return false
+end
+
+local function getWeaponType(player)
+    local function check(tool)
+        if not tool:IsA("Tool") then return nil end
+        if matchesAny(tool.Name, KNIFE_KEYWORDS) then return "knife" end
+        if matchesAny(tool.Name, GUN_KEYWORDS)   then return "gun"   end
+        return nil
+    end
+    local bp = player:FindFirstChild("Backpack")
+    if bp then
+        for _, item in ipairs(bp:GetChildren()) do
+            local w = check(item); if w then return w end
+        end
+    end
+    local char = player.Character
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            local w = check(item); if w then return w end
+        end
+    end
+    return "none"
+end
+
+-- ── HIGHLIGHT HELPERS ────────────────────────────────────────────────────────
+
+local function getHighlight(character)
+    local hl = character:FindFirstChild("_SheriffHL")
+    if not hl then
+        hl = Instance.new("Highlight")
+        hl.Name                = "_SheriffHL"
+        hl.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.FillTransparency    = FILL_TRANS
+        hl.OutlineTransparency = OUTLINE_TRANS
+        hl.Adornee             = character
+        hl.Parent              = character
+    end
+    return hl
+end
+
+local function removeHighlight(character)
+    if not character then return end
+    local hl = character:FindFirstChild("_SheriffHL")
+    if hl then hl.Enabled = false end
+end
+
+local function applyHighlight(character, color)
+    local hl = getHighlight(character)
+    hl.FillColor    = color
+    hl.OutlineColor = color
+    hl.Enabled      = true
+end
+
+-- ── HITBOX HELPERS ───────────────────────────────────────────────────────────
+
+-- Creates or retrieves a big transparent Part welded to HumanoidRootPart
+local function getHitboxPart(character)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local hb = character:FindFirstChild("_BigHitbox")
+    if not hb then
+        hb = Instance.new("Part")
+        hb.Name          = "_BigHitbox"
+        hb.Size          = HITBOX_NORMAL_SIZE
+        hb.Anchored      = false
+        hb.CanCollide    = false
+        hb.CanQuery      = true          -- ← this is what makes it hittable
+        hb.CastShadow    = false
+        hb.Transparency  = 1             -- fully invisible until activated
+        hb.Color         = HITBOX_COLOR
+        hb.Material      = Enum.Material.SmoothPlastic
+        hb.Parent        = character
+
+        -- Weld to HumanoidRootPart so it moves with the player
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0  = hrp
+        weld.Part1  = hb
+        weld.Parent = hb
+    end
+    return hb
+end
+
+-- Expand a character's hitbox
+local function expandHitbox(character)
+    local hb = getHitboxPart(character)
+    if not hb then return end
+    hb.Size         = HITBOX_SIZE
+    hb.Transparency = HITBOX_TRANSPARENCY
+    hb.Color        = HITBOX_COLOR
+end
+
+-- Restore a character's hitbox to normal
+local function restoreHitbox(character)
+    if not character then return end
+    local hb = character:FindFirstChild("_BigHitbox")
+    if hb then
+        hb.Size         = HITBOX_NORMAL_SIZE
+        hb.Transparency = 1   -- invisible (normal)
+    end
+end
+
+-- Remove all expanded hitboxes from every player
+local function restoreAllHitboxes()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then
+            restoreHitbox(p.Character)
+        end
+    end
+end
+
+-- ── HITBOX UPDATE ────────────────────────────────────────────────────────────
+
+local function updateHitboxes()
+    local myRole = getMyRole()
+
+    if myRole == "Murderer" then
+        -- I am the Murderer → expand ALL other players' hitboxes
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                expandHitbox(p.Character)
+            end
+        end
+
+    elseif myRole == "Sheriff" then
+        -- I am the Sheriff → only expand the Murderer's hitbox
+        local murderer = getMurdererPlayer()
+        -- First restore everyone
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                restoreHitbox(p.Character)
+            end
+        end
+        -- Then expand murderer only
+        if murderer and murderer.Character then
+            expandHitbox(murderer.Character)
+        end
+
+    else
+        -- Innocent or round not active → restore all
+        restoreAllHitboxes()
+    end
+end
+
+-- ── HIGHLIGHT UPDATE ─────────────────────────────────────────────────────────
+
+local function updateHighlights()
+    local otherPlayers = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            table.insert(otherPlayers, p)
+        end
+    end
+    if #otherPlayers == 0 then return end
+
+    local weaponMap  = {}
+    local anyoneArmed = false
+
+    for _, p in ipairs(otherPlayers) do
+        local char = p.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then
+            weaponMap[p] = "none"; continue
+        end
+        local wType = getWeaponType(p)
+        weaponMap[p] = wType
+        if wType ~= "none" then anyoneArmed = true end
+    end
+
+    -- Everyone unarmed → clear all
+    if not anyoneArmed then
+        for _, p in ipairs(otherPlayers) do
+            removeHighlight(p.Character)
+            wasUnarmed[p.UserId] = nil
+        end
+        return
+    end
+
+    for _, p in ipairs(otherPlayers) do
+        local char  = p.Character
+        local wType = weaponMap[p]
+        if not char or not char:FindFirstChild("HumanoidRootPart") then continue end
+
+        if wType == "knife" then
+            wasUnarmed[p.UserId] = nil
+            applyHighlight(char, COLOR_KNIFE)
+
+        elseif wType == "gun" then
+            if wasUnarmed[p.UserId] then
+                applyHighlight(char, COLOR_SHERIFF)   -- was unarmed → Sheriff gold
+            else
+                applyHighlight(char, COLOR_GUN)       -- always had gun → blue
+            end
+
+        else
+            wasUnarmed[p.UserId] = true
+            removeHighlight(char)
+        end
+    end
+end
+
+-- ── CHARACTER HOOKS ──────────────────────────────────────────────────────────
+
+local function hookCharacter(player)
+    local char = player.Character or player.CharacterAdded:Wait()
+
+    local humanoid = char:WaitForChild("Humanoid", 5)
+    if humanoid then
+        humanoid.Died:Connect(function()
+            wasUnarmed[player.UserId] = nil
+            restoreHitbox(char)
+        end)
+    end
+end
+
+-- Watch for Role value changes to react immediately
+local function watchRole(player)
+    -- Wait for the Role StringValue to exist
+    local rv = player:WaitForChild("Role", 10)
+    if not rv then return end
+    rv:GetPropertyChangedSignal("Value"):Connect(function()
+        -- If round ended (role cleared) → restore that player's hitbox
+        if rv.Value == "" or rv.Value == "Innocent" then
+            if player.Character then
+                restoreHitbox(player.Character)
+            end
+        end
+        -- Also react if MY role changed
+        if player == LocalPlayer then
+            updateHitboxes()
+        end
+    end)
+end
+
+Players.PlayerAdded:Connect(function(player)
+    task.spawn(watchRole, player)
+    player.CharacterAdded:Connect(function()
+        wasUnarmed[player.UserId] = nil
+        task.wait(1)
+        hookCharacter(player)
+        updateHitboxes()
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    wasUnarmed[player.UserId] = nil
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+    task.spawn(watchRole, player)
+    if player ~= LocalPlayer then
+        task.spawn(hookCharacter, player)
+    end
+end
+
+-- ── MAIN LOOP ────────────────────────────────────────────────────────────────
+
+local ticker = 0
+RunService.Heartbeat:Connect(function(dt)
+    ticker += dt
+    if ticker < UPDATE_RATE then return end
+    ticker = 0
+    updateHighlights()
+    updateHitboxes()
+end)
+
+print("[SheriffHighlight] Loaded ✓  |  Role: " .. getMyRole())
+      
