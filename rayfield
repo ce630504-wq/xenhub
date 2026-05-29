@@ -54,7 +54,7 @@ local Button = Tab:CreateButton({
 
 local Tab = Window:CreateTab("Da' Murdurer", "swords")
 local Button = Tab:CreateButton({
-   Name = "Button Example",
+   Name = "ESP",
    Callback = function()
       loadstring(game:HttpGet("https://raw.githubusercontent.com/ce630504-wq/xenhub/refs/heads/main/Da'%20Murderer"))()
    -- The function that takes place when the button is pressed
@@ -62,7 +62,7 @@ local Button = Tab:CreateButton({
 })
 
 local Button = Tab:CreateButton({
-   Name = "Button Example",
+   Name = "HitBox",
    Callback = function()
       loadstring(game:HttpGet("https://raw.githubusercontent.com/example-prog/Hitbox-Expander/refs/heads/main/RScripter"))()
    -- The function that takes place when the button is pressed
