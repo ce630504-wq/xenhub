@@ -1,31 +1,31 @@
 --[[
     ═══════════════════════════════════════════════════════════════
-    SHERIFF HIGHLIGHT + HITBOX SYSTEM  —  LocalScript
+    SHERIFF + HITBOX SYSTEM  —  LocalScript
     Place inside: StarterGui  (as a LocalScript)
     ═══════════════════════════════════════════════════════════════
 
-    HIGHLIGHT (all other players):
+    HIGHLIGHT RULES (other players only):
       🔵 Blue   → has a Gun
       🔴 Red    → has a Knife
-      🩶 Gray   → unarmed / innocent
-      🟡 Gold   → was unarmed, picked up a Gun (Sheriff)
+      🟡 Gold   → was unarmed, then picked up a Gun (Sheriff)
+      ⬛ None   → unarmed  |  everyone unarmed → all clear
 
-    HITBOX (everyone gets one):
-      • All players get an expanded hitbox Part
-      • Draggable GUI lets you resize it live (default size = 1)
-      • PC: click + drag  |  Mobile: touch + drag
+    HITBOX RULES (transparent expanded Part on HumanoidRootPart):
+      Murderer role  → ALL other players get big hitbox
+      Sheriff role   → only the Murderer gets big hitbox
+      Match ends     → all hitboxes restored to normal
 
-    ROLE DETECTION  (optional, for Sheriff/Murderer hitbox):
-      StringValue named "Role" inside Player: "Murderer"|"Sheriff"|"Innocent"|""
+    ROLE DETECTION:
+      Reads a StringValue named "Role" inside each Player.
+      Values expected: "Murderer" | "Sheriff" | "Innocent" | ""
+      → Ask your server script to set player.Role.Value each round.
     ═══════════════════════════════════════════════════════════════
 --]]
 
-local Players         = game:GetService("Players")
-local RunService      = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
-local LocalPlayer  = Players.LocalPlayer
-local PlayerGui    = LocalPlayer:WaitForChild("PlayerGui")
+local LocalPlayer = Players.LocalPlayer
 
 -- ── CONFIG ───────────────────────────────────────────────────────────────────
 
@@ -33,296 +33,54 @@ local KNIFE_KEYWORDS = { "knife", "blade", "dagger", "shiv", "machete" }
 local GUN_KEYWORDS   = { "gun", "pistol", "rifle", "shotgun", "smg",
                           "ak", "m4", "uzi", "sniper", "revolver", "glock" }
 
-local COLOR_GUN      = Color3.fromRGB(40,  120, 220)   -- Blue
-local COLOR_KNIFE    = Color3.fromRGB(220, 40,  40)    -- Red
-local COLOR_INNOCENT = Color3.fromRGB(160, 160, 160)   -- Gray
-local COLOR_SHERIFF  = Color3.fromRGB(255, 200, 30)    -- Gold
+-- Highlight colors
+local COLOR_GUN     = Color3.fromRGB(40,  120, 220)   -- Blue
+local COLOR_KNIFE   = Color3.fromRGB(220, 40,  40)    -- Red
+local COLOR_SHERIFF = Color3.fromRGB(255, 200, 30)    -- Gold
 
-local FILL_TRANS     = 0.5    -- 50% transparent fill
-local OUTLINE_TRANS  = 0.2
+local FILL_TRANS    = 0.75
+local OUTLINE_TRANS = 0.2
 
-local UPDATE_RATE    = 0.2    -- seconds between scans
+-- Hitbox settings
+local HITBOX_SIZE        = Vector3.new(8, 8, 8)   -- expanded hitbox size
+local HITBOX_NORMAL_SIZE = Vector3.new(2, 2, 1)   -- default HRP size
+local HITBOX_TRANSPARENCY = 0.4                   -- 40% transparent (visible tint)
+local HITBOX_COLOR        = Color3.fromRGB(255, 80, 80) -- reddish tint
 
--- Hitbox default size (1 = 1 stud cube, scale up with GUI)
-local hitboxSize     = 1      -- controlled by GUI
+local UPDATE_RATE = 0.2   -- seconds between scans
 
 -- ── STATE ────────────────────────────────────────────────────────────────────
 
-local wasUnarmed = {}   -- [userId] = true if seen unarmed this life
+local wasUnarmed = {}   -- [userId] = true if player was ever unarmed this life
 
--- ── DRAGGABLE HITBOX SIZE GUI ─────────────────────────────────────────────────
+-- ── ROLE HELPERS ─────────────────────────────────────────────────────────────
 
-local function buildGui()
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name             = "HitboxSizeGui"
-    screenGui.ResetOnSpawn     = false
-    screenGui.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
-    screenGui.DisplayOrder     = 10
-    screenGui.Parent           = PlayerGui
-
-    -- Main frame
-    local frame = Instance.new("Frame")
-    frame.Name            = "Panel"
-    frame.Size            = UDim2.new(0, 200, 0, 110)
-    frame.Position        = UDim2.new(0, 20, 0, 20)
-    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
-    frame.BorderSizePixel = 0
-    frame.Active          = true
-    frame.Parent          = screenGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent       = frame
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color     = Color3.fromRGB(80, 80, 120)
-    stroke.Thickness = 1.5
-    stroke.Parent    = frame
-
-    -- Title bar (drag handle)
-    local titleBar = Instance.new("Frame")
-    titleBar.Name              = "TitleBar"
-    titleBar.Size              = UDim2.new(1, 0, 0, 28)
-    titleBar.BackgroundColor3  = Color3.fromRGB(45, 45, 70)
-    titleBar.BorderSizePixel   = 0
-    titleBar.Parent            = frame
-
-    local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 8)
-    titleCorner.Parent       = titleBar
-
-    -- Fix bottom corners of title bar
-    local titleFix = Instance.new("Frame")
-    titleFix.Size             = UDim2.new(1, 0, 0, 8)
-    titleFix.Position         = UDim2.new(0, 0, 1, -8)
-    titleFix.BackgroundColor3 = Color3.fromRGB(45, 45, 70)
-    titleFix.BorderSizePixel  = 0
-    titleFix.Parent           = titleBar
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Text            = "⬡  Hitbox Size"
-    titleLabel.Size            = UDim2.new(1, 0, 1, 0)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Font            = Enum.Font.GothamBold
-    titleLabel.TextSize        = 13
-    titleLabel.TextColor3      = Color3.fromRGB(200, 200, 255)
-    titleLabel.TextXAlignment  = Enum.TextXAlignment.Left
-    titleLabel.Position        = UDim2.new(0, 10, 0, 0)
-    titleLabel.Parent          = titleBar
-
-    -- Drag icon hint
-    local dragHint = Instance.new("TextLabel")
-    dragHint.Text              = "⠿"
-    dragHint.Size              = UDim2.new(0, 20, 1, 0)
-    dragHint.Position          = UDim2.new(1, -22, 0, 0)
-    dragHint.BackgroundTransparency = 1
-    dragHint.Font              = Enum.Font.GothamBold
-    dragHint.TextSize          = 16
-    dragHint.TextColor3        = Color3.fromRGB(140, 140, 180)
-    dragHint.Parent            = titleBar
-
-    -- Size display label
-    local sizeLabel = Instance.new("TextLabel")
-    sizeLabel.Name             = "SizeLabel"
-    sizeLabel.Text             = "Size: 1"
-    sizeLabel.Size             = UDim2.new(1, 0, 0, 22)
-    sizeLabel.Position         = UDim2.new(0, 0, 0, 32)
-    sizeLabel.BackgroundTransparency = 1
-    sizeLabel.Font             = Enum.Font.Gotham
-    sizeLabel.TextSize         = 12
-    sizeLabel.TextColor3       = Color3.fromRGB(180, 180, 200)
-    sizeLabel.Parent           = frame
-
-    -- ── Slider bar ──────────────────────────────────────────────────────────
-    local sliderTrack = Instance.new("Frame")
-    sliderTrack.Name             = "SliderTrack"
-    sliderTrack.Size             = UDim2.new(1, -20, 0, 8)
-    sliderTrack.Position         = UDim2.new(0, 10, 0, 58)
-    sliderTrack.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
-    sliderTrack.BorderSizePixel  = 0
-    sliderTrack.Parent           = frame
-
-    local trackCorner = Instance.new("UICorner")
-    trackCorner.CornerRadius = UDim.new(1, 0)
-    trackCorner.Parent       = sliderTrack
-
-    local sliderFill = Instance.new("Frame")
-    sliderFill.Name             = "Fill"
-    sliderFill.Size             = UDim2.new(0, 0, 1, 0)  -- updated dynamically
-    sliderFill.BackgroundColor3 = Color3.fromRGB(100, 120, 255)
-    sliderFill.BorderSizePixel  = 0
-    sliderFill.Parent           = sliderTrack
-
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent       = sliderFill
-
-    local sliderKnob = Instance.new("Frame")
-    sliderKnob.Name             = "Knob"
-    sliderKnob.Size             = UDim2.new(0, 16, 0, 16)
-    sliderKnob.Position         = UDim2.new(0, -8, 0.5, -8)
-    sliderKnob.BackgroundColor3 = Color3.fromRGB(200, 200, 255)
-    sliderKnob.BorderSizePixel  = 0
-    sliderKnob.ZIndex           = 3
-    sliderKnob.Parent           = sliderTrack
-
-    local knobCorner = Instance.new("UICorner")
-    knobCorner.CornerRadius = UDim.new(1, 0)
-    knobCorner.Parent       = sliderKnob
-
-    -- ── +/- buttons + text box row ──────────────────────────────────────────
-    local btnRow = Instance.new("Frame")
-    btnRow.Size             = UDim2.new(1, -20, 0, 30)
-    btnRow.Position         = UDim2.new(0, 10, 0, 72)
-    btnRow.BackgroundTransparency = 1
-    btnRow.Parent           = frame
-
-    local function makeBtn(text, xPos)
-        local btn = Instance.new("TextButton")
-        btn.Text              = text
-        btn.Size              = UDim2.new(0, 30, 1, 0)
-        btn.Position          = UDim2.new(0, xPos, 0, 0)
-        btn.BackgroundColor3  = Color3.fromRGB(60, 60, 90)
-        btn.BorderSizePixel   = 0
-        btn.Font              = Enum.Font.GothamBold
-        btn.TextSize          = 16
-        btn.TextColor3        = Color3.fromRGB(220, 220, 255)
-        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = btn
-        btn.Parent = btnRow
-        return btn
+-- Returns "Murderer", "Sheriff", "Innocent", or ""
+local function getRole(player)
+    local rv = player:FindFirstChild("Role")
+    if rv and rv:IsA("StringValue") then
+        return rv.Value
     end
-
-    local btnMinus = makeBtn("−", 0)
-    local btnPlus  = makeBtn("+", 150 - 30)
-
-    local inputBox = Instance.new("TextBox")
-    inputBox.Text             = "1"
-    inputBox.Size             = UDim2.new(0, 78, 1, 0)
-    inputBox.Position         = UDim2.new(0, 36, 0, 0)
-    inputBox.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
-    inputBox.BorderSizePixel  = 0
-    inputBox.Font             = Enum.Font.GothamBold
-    inputBox.TextSize         = 13
-    inputBox.TextColor3       = Color3.fromRGB(220, 220, 255)
-    inputBox.ClearTextOnFocus = false
-    inputBox.PlaceholderText  = "size..."
-    local inputCorner = Instance.new("UICorner"); inputCorner.CornerRadius = UDim.new(0,6); inputCorner.Parent = inputBox
-    inputBox.Parent = btnRow
-
-    -- Slider range
-    local MIN_SIZE = 1
-    local MAX_SIZE = 20
-
-    local function clampSize(v)
-        return math.clamp(math.round(v * 10) / 10, MIN_SIZE, MAX_SIZE)
+    -- Fallback: check team name
+    if player.Team then
+        return player.Team.Name
     end
-
-    local function setSize(v)
-        hitboxSize = clampSize(v)
-        local display = math.floor(hitboxSize * 10 + 0.5) / 10
-        inputBox.Text   = tostring(display)
-        sizeLabel.Text  = "Size: " .. tostring(display)
-        -- Update slider visuals
-        local pct = (hitboxSize - MIN_SIZE) / (MAX_SIZE - MIN_SIZE)
-        sliderFill.Size     = UDim2.new(pct, 0, 1, 0)
-        sliderKnob.Position = UDim2.new(pct, -8, 0.5, -8)
-    end
-
-    setSize(1)
-
-    -- Button actions
-    btnMinus.MouseButton1Click:Connect(function() setSize(hitboxSize - 1) end)
-    btnPlus.MouseButton1Click:Connect(function()  setSize(hitboxSize + 1) end)
-    -- Mobile touch for buttons
-    btnMinus.TouchTap:Connect(function() setSize(hitboxSize - 1) end)
-    btnPlus.TouchTap:Connect(function()  setSize(hitboxSize + 1) end)
-
-    -- Text box input
-    inputBox.FocusLost:Connect(function()
-        local v = tonumber(inputBox.Text)
-        if v then setSize(v) else inputBox.Text = tostring(hitboxSize) end
-    end)
-
-    -- ── Slider drag (PC + Mobile) ────────────────────────────────────────────
-    local sliderDragging = false
-
-    local function updateSliderFromPos(inputPos)
-        local absPos  = sliderTrack.AbsolutePosition
-        local absSize = sliderTrack.AbsoluteSize
-        local pct     = math.clamp((inputPos.X - absPos.X) / absSize.X, 0, 1)
-        setSize(MIN_SIZE + pct * (MAX_SIZE - MIN_SIZE))
-    end
-
-    sliderTrack.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            sliderDragging = true
-            updateSliderFromPos(input.Position)
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if not sliderDragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then
-            updateSliderFromPos(input.Position)
-        end
-    end)
-
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            sliderDragging = false
-        end
-    end)
-
-    -- ── Panel drag (PC + Mobile) ─────────────────────────────────────────────
-    local dragging    = false
-    local dragStart   = nil
-    local startPos    = nil
-
-    local function onDragBegan(input)
-        dragging  = true
-        dragStart = input.Position
-        startPos  = frame.Position
-    end
-
-    local function onDragMoved(input)
-        if not dragging then return end
-        local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-
-    local function onDragEnded(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end
-
-    titleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            onDragBegan(input)
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then
-            onDragMoved(input)
-        end
-    end)
-
-    UserInputService.InputEnded:Connect(onDragEnded)
+    return ""
 end
 
-buildGui()
+local function getMyRole()
+    return getRole(LocalPlayer)
+end
+
+-- Find which player has the Murderer role
+local function getMurdererPlayer()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and getRole(p) == "Murderer" then
+            return p
+        end
+    end
+    return nil
+end
 
 -- ── WEAPON HELPERS ───────────────────────────────────────────────────────────
 
@@ -359,10 +117,10 @@ end
 -- ── HIGHLIGHT HELPERS ────────────────────────────────────────────────────────
 
 local function getHighlight(character)
-    local hl = character:FindFirstChild("_HL")
+    local hl = character:FindFirstChild("_SheriffHL")
     if not hl then
         hl = Instance.new("Highlight")
-        hl.Name                = "_HL"
+        hl.Name                = "_SheriffHL"
         hl.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
         hl.FillTransparency    = FILL_TRANS
         hl.OutlineTransparency = OUTLINE_TRANS
@@ -372,6 +130,12 @@ local function getHighlight(character)
     return hl
 end
 
+local function removeHighlight(character)
+    if not character then return end
+    local hl = character:FindFirstChild("_SheriffHL")
+    if hl then hl.Enabled = false end
+end
+
 local function applyHighlight(character, color)
     local hl = getHighlight(character)
     hl.FillColor    = color
@@ -379,30 +143,28 @@ local function applyHighlight(character, color)
     hl.Enabled      = true
 end
 
-local function removeHighlight(character)
-    if not character then return end
-    local hl = character:FindFirstChild("_HL")
-    if hl then hl.Enabled = false end
-end
-
 -- ── HITBOX HELPERS ───────────────────────────────────────────────────────────
 
-local function getHitbox(character)
+-- Creates or retrieves a big transparent Part welded to HumanoidRootPart
+local function getHitboxPart(character)
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
-    local hb = character:FindFirstChild("_Hitbox")
+
+    local hb = character:FindFirstChild("_BigHitbox")
     if not hb then
         hb = Instance.new("Part")
-        hb.Name         = "_Hitbox"
-        hb.Anchored     = false
-        hb.CanCollide   = false
-        hb.CanQuery     = true
-        hb.CastShadow   = false
-        hb.Transparency = 0.5
-        hb.Color        = Color3.fromRGB(255, 255, 255)
-        hb.Material     = Enum.Material.SmoothPlastic
-        hb.Size         = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
-        hb.Parent       = character
+        hb.Name          = "_BigHitbox"
+        hb.Size          = HITBOX_NORMAL_SIZE
+        hb.Anchored      = false
+        hb.CanCollide    = false
+        hb.CanQuery      = true          -- ← this is what makes it hittable
+        hb.CastShadow    = false
+        hb.Transparency  = 1             -- fully invisible until activated
+        hb.Color         = HITBOX_COLOR
+        hb.Material      = Enum.Material.SmoothPlastic
+        hb.Parent        = character
+
+        -- Weld to HumanoidRootPart so it moves with the player
         local weld = Instance.new("WeldConstraint")
         weld.Part0  = hrp
         weld.Part1  = hb
@@ -411,51 +173,120 @@ local function getHitbox(character)
     return hb
 end
 
-local function updateHitboxSize(character)
-    local hb = character:FindFirstChild("_Hitbox")
+-- Expand a character's hitbox
+local function expandHitbox(character)
+    local hb = getHitboxPart(character)
+    if not hb then return end
+    hb.Size         = HITBOX_SIZE
+    hb.Transparency = HITBOX_TRANSPARENCY
+    hb.Color        = HITBOX_COLOR
+end
+
+-- Restore a character's hitbox to normal
+local function restoreHitbox(character)
+    if not character then return end
+    local hb = character:FindFirstChild("_BigHitbox")
     if hb then
-        hb.Size = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
+        hb.Size         = HITBOX_NORMAL_SIZE
+        hb.Transparency = 1   -- invisible (normal)
     end
 end
 
-local function removeHitbox(character)
-    if not character then return end
-    local hb = character:FindFirstChild("_Hitbox")
-    if hb then hb:Destroy() end
+-- Remove all expanded hitboxes from every player
+local function restoreAllHitboxes()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then
+            restoreHitbox(p.Character)
+        end
+    end
 end
 
--- ── MAIN UPDATE ──────────────────────────────────────────────────────────────
+-- ── HITBOX UPDATE ────────────────────────────────────────────────────────────
 
-local function updateAll()
+local function updateHitboxes()
+    local myRole = getMyRole()
+
+    if myRole == "Murderer" then
+        -- I am the Murderer → expand ALL other players' hitboxes
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                expandHitbox(p.Character)
+            end
+        end
+
+    elseif myRole == "Sheriff" then
+        -- I am the Sheriff → only expand the Murderer's hitbox
+        local murderer = getMurdererPlayer()
+        -- First restore everyone
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                restoreHitbox(p.Character)
+            end
+        end
+        -- Then expand murderer only
+        if murderer and murderer.Character then
+            expandHitbox(murderer.Character)
+        end
+
+    else
+        -- Innocent or round not active → restore all
+        restoreAllHitboxes()
+    end
+end
+
+-- ── HIGHLIGHT UPDATE ─────────────────────────────────────────────────────────
+
+local function updateHighlights()
+    local otherPlayers = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p == LocalPlayer then continue end
+        if p ~= LocalPlayer then
+            table.insert(otherPlayers, p)
+        end
+    end
+    if #otherPlayers == 0 then return end
 
+    local weaponMap  = {}
+    local anyoneArmed = false
+
+    for _, p in ipairs(otherPlayers) do
         local char = p.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then
+            weaponMap[p] = "none"; continue
+        end
+        local wType = getWeaponType(p)
+        weaponMap[p] = wType
+        if wType ~= "none" then anyoneArmed = true end
+    end
+
+    -- Everyone unarmed → clear all
+    if not anyoneArmed then
+        for _, p in ipairs(otherPlayers) do
+            removeHighlight(p.Character)
+            wasUnarmed[p.UserId] = nil
+        end
+        return
+    end
+
+    for _, p in ipairs(otherPlayers) do
+        local char  = p.Character
+        local wType = weaponMap[p]
         if not char or not char:FindFirstChild("HumanoidRootPart") then continue end
 
-        local wType = getWeaponType(p)
-
-        -- ── Highlight ──────────────────────────────────────────────────────
         if wType == "knife" then
             wasUnarmed[p.UserId] = nil
             applyHighlight(char, COLOR_KNIFE)
 
         elseif wType == "gun" then
             if wasUnarmed[p.UserId] then
-                applyHighlight(char, COLOR_SHERIFF)   -- was innocent → Sheriff
+                applyHighlight(char, COLOR_SHERIFF)   -- was unarmed → Sheriff gold
             else
-                applyHighlight(char, COLOR_GUN)
+                applyHighlight(char, COLOR_GUN)       -- always had gun → blue
             end
 
         else
-            -- Unarmed → Gray
             wasUnarmed[p.UserId] = true
-            applyHighlight(char, COLOR_INNOCENT)
+            removeHighlight(char)
         end
-
-        -- ── Hitbox (everyone gets one, size from GUI) ──────────────────────
-        getHitbox(char)
-        updateHitboxSize(char)
     end
 end
 
@@ -463,21 +294,42 @@ end
 
 local function hookCharacter(player)
     local char = player.Character or player.CharacterAdded:Wait()
+
     local humanoid = char:WaitForChild("Humanoid", 5)
     if humanoid then
         humanoid.Died:Connect(function()
             wasUnarmed[player.UserId] = nil
-            removeHighlight(char)
-            removeHitbox(char)
+            restoreHitbox(char)
         end)
     end
 end
 
+-- Watch for Role value changes to react immediately
+local function watchRole(player)
+    -- Wait for the Role StringValue to exist
+    local rv = player:WaitForChild("Role", 10)
+    if not rv then return end
+    rv:GetPropertyChangedSignal("Value"):Connect(function()
+        -- If round ended (role cleared) → restore that player's hitbox
+        if rv.Value == "" or rv.Value == "Innocent" then
+            if player.Character then
+                restoreHitbox(player.Character)
+            end
+        end
+        -- Also react if MY role changed
+        if player == LocalPlayer then
+            updateHitboxes()
+        end
+    end)
+end
+
 Players.PlayerAdded:Connect(function(player)
+    task.spawn(watchRole, player)
     player.CharacterAdded:Connect(function()
         wasUnarmed[player.UserId] = nil
         task.wait(1)
         hookCharacter(player)
+        updateHitboxes()
     end)
 end)
 
@@ -486,19 +338,21 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do
+    task.spawn(watchRole, player)
     if player ~= LocalPlayer then
         task.spawn(hookCharacter, player)
     end
 end
 
--- ── HEARTBEAT LOOP ───────────────────────────────────────────────────────────
+-- ── MAIN LOOP ────────────────────────────────────────────────────────────────
 
 local ticker = 0
 RunService.Heartbeat:Connect(function(dt)
     ticker += dt
     if ticker < UPDATE_RATE then return end
     ticker = 0
-    updateAll()
+    updateHighlights()
+    updateHitboxes()
 end)
 
-print("[HighlightHitbox] Loaded ✓")
+print("[SheriffHighlight] Loaded ✓  |  Role: " .. getMyRole())
